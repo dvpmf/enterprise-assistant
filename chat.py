@@ -1,5 +1,5 @@
 #-*- coding: utf-8 -*-
-from idlelib import history
+
 
 import requests
 
@@ -12,21 +12,22 @@ SYSTEM_PROMPT = ('你是[企业智能助手]，专门帮员工查询企业内部
 def build_payload(message:list)->dict:#把消息列表组装成发给 Ollama 的请求体。
     return {'model' : MODEL,
             'messages': message,
-            'system_prompt':SYSTEM_PROMPT,
+            'think':False,
             'stream':False}
 def ask(message:list)->str:
     resp = requests.post(OLLAMA_URL, json = build_payload(message))
     resp.raise_for_status()
+    resp.raise_for_status()
     return resp.json()['message']['content']
 def main()->None:
     history = [{'role':'system',
-                'content':'SYSTEM_PROMPT'}]
+                'content':SYSTEM_PROMPT}]
     print('企业智能助手已启动（输入 exit 退出）')
     while True:
         user_input = input('你：')
         if user_input.strip().lower() =='exit':
             break
-        history.append({'role':'system',
+        history.append({'role':'user',
                         'content':user_input})
         reply = ask(history)
         history.append({'role':'assistant',
