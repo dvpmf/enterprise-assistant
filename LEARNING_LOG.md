@@ -1,0 +1,92 @@
+# LEARNING_LOG · 排障日志
+
+> 本项目是「企业智能助手（Enterprise AI Assistant）」的成长记录。
+> 格式约定：**做了什么 → 遇到什么问题 → 怎么排查 → 怎么解决 → 懂了什么**。
+> 重点记「排查过程」，因为面试官问的是思路，不是答案。
+
+---
+
+## 2026-09-07 · Day3（RAG 建库第一步：文档切分）
+
+### 阶段
+用 LangChain 对员工手册、报销制度文档做切分，为后续向量化入库做准备。
+
+### 做了什么
+- 新建 `documents/` 目录，放入企业文档 employee_handbook.txt、reimbursement_policy.txt。
+- 新建 `split_docs.py`：`TextLoader` 读文档 → `RecursiveCharacterTextSplitter` 切成知识碎片（chunk_size=200、chunk_overlap=50）。
+- 运行结果：2 份文档 → 9 个碎片，每个碎片带来源标签，中文无乱码。
+
+### 问题 A：DeprecationWarning（黄色警告，不影响运行）
+- **现象**：导入 TextLoader 时提示 `langchain-community is being sunset and is no longer actively maintained`。
+- **怎么排查**：读警告内容，得知是该包未来将被弃用，官方建议迁移到独立集成包（langchain_xxx 独立包）。
+- **怎么解决**：功能当前正常，暂不处理；Day5 优化时再迁移，避免现在引入回归风险。
+- **懂了什么**：弃用警告 ≠ 报错。它提示"未来的风险"，先识别、记下来，在重构时处理，不必打断当前开发。
+
+### 问题 B（观察学习）：overlap 重叠效果验证
+- **现象**：打印碎片头尾对比，发现碎片 2 结尾和碎片 3 开头都出现"4. 婚假：凭结婚证可休 3 天带薪婚假"。
+- **怎么排查**：临时修改预览代码，分别打印每个碎片的开头 60 字与结尾 60 字，肉眼对比相邻碎片。
+- **懂了什么**：
+  - `chunk_overlap` = 相邻块共享一段文字，让恰好落在切分边界上的信息在前后两块都完整存在。
+  - 若没有重叠，一条信息被切成两半 → 检索时无论搜到哪块都答不完整 → 模型只能瞎编。
+  - 文档对象结构 = `page_content`（正文）+ `metadata`（来源标签），metadata 用于追溯碎片来自哪个文件。
+
+### 注意
+- `TextLoader` 必须指定 `encoding="utf-8"`，否则 Windows 默认编码可能造成中文乱码。
+- 所有"调大模型/处理文档"本质上都是把数据喂给模型，RAG 的第一步就是先把大文档切成能检索的小块。
+
+---
+
+## 2026-09-07 · Day2（chat.py 多轮记忆对话）
+
+### 阶段
+Python + requests 调本地 Ollama（qwen3.5:4b），实现带 system 人设的多轮记忆命令行对话。
+
+### 做了什么
+- 新建 `chat.py`：通过 `history` 列表累积 system/user/assistant 消息，每轮把完整历史发给 Ollama，实现"记忆"。
+- 复用了 Day1 的底层方式：`requests.post` 发 JSON，不装任何框架。
+
+### 问题 A：代码理解性 bug（手敲 4 坑）
+程序能跑，但"记忆/人设"名存实亡。逐行对照原理后发现问题：
+
+| # | 错误写法 | 正确写法 | 原因 |
+|---|---------|---------|------|
+| 1 | `from idlelib import history` | 删除 | 误加的无用导入 |
+| 2 | payload 里加 `system_prompt` 字段 | 删除 | `/api/chat` 不认识该键，人设必须放 `messages` 的 system 消息 |
+| 3 | `'content': 'SYSTEM_PROMPT'` | `'content': SYSTEM_PROMPT` | 带引号 = 发变量名本身；不带 = 引用变量内容 |
+| 4 | 用户输入记成 `'role': 'system'` | 记为 `'role': 'user'` | role 决定消息身份，你的话必须是 user |
+
+### 问题 B：多轮后偶发空回复（重点案例）
+- **现象**：对话进行几轮后，模型偶尔返回空（`助手:` 后面什么都没有）。重启后再测，到第 3 轮左右复现。
+- **怎么排查（关键过程）**：
+  1. 先排除人为因素：干净重跑 3 句（不把"助手:xxx"当输入贴回去），空回复仍复现 → 判断是**必现 Bug**，不是误操作。
+  2. 加临时调试行，打印**原始完整响应** `resp.json()`（不是只看最终文本）。
+  3. 对比响应 JSON 发现：`message.content` 是空字符串 `''`，但 `message.thinking` 里有一大段英文草稿；`eval_count: 927` → **模型明明生成了 927 个 token，却全写进了 thinking，没落进 content**。
+  4. 定位根因：qwen3.5:4b 默认开启"思考模式"（先打草稿再回答），小模型偶尔"想太多"，只出草稿就 `stop` 了。
+- **怎么解决**：请求体加参数 `'think': False`，关闭思考模式。
+- **怎么验证**：再跑 3 轮，每轮 `content` 都有正常文字，`thinking` 字段消失，身份记忆问答正确。
+- **懂了什么**：
+  - 模型返回的 JSON 里有 `content` 和 `thinking` 两个字段；`content` 才是程序该取的正式答案。
+  - "空回复"排查方法论：**加打印看原始响应 → 区分是模型端空返回还是代码端没取到**。
+  - 判断"偶发 vs 必现"：排除人为因素（如把模型输出又粘回输入污染历史）后再下结论。
+  - 生产环境经验：对开启思考模式的模型，可显式传 `think: False` 保证 `content` 稳定，或用兜底逻辑（content 为空时从 thinking 取）。
+
+---
+
+## 2026-09-06 · Day1（main.py 单轮对话）
+
+### 阶段
+Python + requests 调本地 Ollama，实现单轮问答。
+
+### 做了什么
+- 新建 `main.py`：`requests.post` 调 `/api/chat`，让 qwen3.5:4b 回答一个问题。
+- GitHub 仓库 `dvpmf/enterprise-assistant` 创建并推送首版。
+
+### 问题与解决
+- [待补充] KeyError 问题：_（回忆：当时取 `data[...]` 报 KeyError 的具体键、报错原文）_
+- [待补充] 懒加载问题：_（回忆：Ollama 首次调用模型加载耗时/超时的具体表现与处理）_
+
+### 懂了什么
+- 所有"调大模型"本质 = 发 HTTP 请求 + body 塞 JSON + 收 JSON 响应。
+- （待补充）
+
+---
