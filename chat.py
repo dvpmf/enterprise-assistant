@@ -17,7 +17,6 @@ def build_payload(message:list)->dict:#把消息列表组装成发给 Ollama 的
 def ask(message:list)->str:
     resp = requests.post(OLLAMA_URL, json = build_payload(message))
     resp.raise_for_status()
-    resp.raise_for_status()
     return resp.json()['message']['content']
 def main()->None:
     history = [{'role':'system',
