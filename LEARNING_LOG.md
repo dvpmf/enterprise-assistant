@@ -6,6 +6,45 @@
 
 ---
 
+## 2026-09-07 · Day5（FastAPI 接口 + Streamlit 界面）
+
+### 阶段
+把命令行版 RAG 问答包装成 Web 服务：FastAPI 提供后端接口，Streamlit 提供浏览器界面，实现"前后端分离"。
+
+### 做了什么
+- 装包：fastapi + uvicorn（ASGI 服务器）+ streamlit。
+- `minimal_api.py`：FastAPI 最小示例，理解"路由 + 启动"。
+- `api.py`：把 Day4 的检索+拼接+生成逻辑包装成 `POST /ask` 接口，用 pydantic `AskRequest` 校验请求体必须有 `question` 字段。
+- `test_api.py`：用 requests 发 POST 测接口，全链路验证通过（HTTP 客户端 → FastAPI → chroma 检索 → qwen3.5 → 返回）。
+- `app.py`：Streamlit 聊天界面，用 `st.session_state.messages` 保存对话历史，`st.chat_message` 渲染气泡。
+- 结果：浏览器 8501 端口对话界面跑通，问答准确带出处。
+
+### 问题 A：uvicorn 启动找不到模块
+- **现象**：`python -m uvicorn minimal_api:app --reload` 报 `Could not import module "minimal_api"`。
+- **怎么排查**：看命令行提示符发现当前目录是 `D:\agent`，而文件在 `D:\agent\enterprise-assistant`。
+- **怎么解决**：先 `cd D:\agent\enterprise-assistant` 再启动。uvicorn/streamlit 按"当前目录 + 模块名"定位文件，与运行脚本不同。
+- **懂了什么**：启动服务器类工具前先确认 cwd；`minimal_api:app` = 文件名:应用变量名。
+
+### 问题 B：uvicorn.run 加 reload 报错
+- **现象**：代码里 `uvicorn.run(app, ..., reload=True)` 报 `You must pass the application as an import string to enable 'reload'`。
+- **怎么解决**：改成字符串形式 `uvicorn.run("minimal_api:app", ...)`。
+- **懂了什么**：reload 要监控文件变化，必须知道应用来自哪个文件（import string），传内存对象它无法定位文件。
+
+### 问题 C：uvicorn 误报 test_api.py 变化
+- **现象**：api.py 运行时监测到 test_api.py 新建触发 Reload，是**无害警告**，忽略即可。
+
+### 问题 D：Streamlit 首次运行卡 Email 提示
+- **现象**：首次 `streamlit run app.py` 停在 `Email:` 欢迎注册页。
+- **怎么解决**：直接回车跳过即可，不填邮箱。
+
+### 懂了什么
+- **前后端分工**：FastAPI 管逻辑（后端），Streamlit 管界面（前端），界面通过 HTTP POST 调接口——自己是"服务器"，也是 Ollama 的"客户端"，处在链路中间层。
+- **st.session_state**：Streamlit 每次交互重跑脚本，session_state 是跨重跑保存数据的"保险箱"，聊天记录靠它不丢。
+- **pydantic BaseModel**：声明请求体结构，缺字段/类型错自动返回 422，省去手写校验。
+- 两种启动方式：命令行 uvicorn 命令 vs 代码里 `uvicorn.run("模块:app")`。
+
+---
+
 ## 2026-09-07 · Day4（完整 RAG 问答）
 
 ### 阶段
