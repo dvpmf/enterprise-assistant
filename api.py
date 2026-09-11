@@ -3,6 +3,7 @@
 作用：把 Day4 的 RAG 问答能力包装成 HTTP API。
 效果：启动后，POST 请求 http://127.0.0.1:8000/ask 传入问题，返回模型基于文档的回答。
 """
+import os  # 作用：读取环境变量；效果：让模型地址能在不同环境间切换。
 from fastapi import FastAPI  # 作用：引入框架；效果：创建 Web 应用。
 from pydantic import BaseModel  # 作用：定义请求体结构；效果：自动校验收到的 JSON 格式。
 from langchain_ollama import ChatOllama, OllamaEmbeddings  # 作用：两位模型；效果：负责回答和转向量。
@@ -12,12 +13,15 @@ from langchain_chroma import Chroma  # 作用：连接向量库；效果：支�
 PERSIST_DIR = "chroma_db"
 EMBED_MODEL = "nomic-embed-text"
 CHAT_MODEL = "qwen3.5:4b"
+# 作用：读取 Ollama 服务地址；效果：本机跑用默认值，容器跑读环境变量（指向宿主机）。
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
+
 
 # 作用：创建 embedding 对象；效果：检索时把问题转向量。
-embedding = OllamaEmbeddings(model=EMBED_MODEL)
+embedding = OllamaEmbeddings(model=EMBED_MODEL,base_url=OLLAMA_BASE_URL)
 
 # 作用：创建对话模型并关思考；效果：回答稳定进 content。
-llm = ChatOllama(model=CHAT_MODEL, reasoning=False)
+llm = ChatOllama(model=CHAT_MODEL, reasoning=False, base_url=OLLAMA_BASE_URL)
 
 # 作用：定义人设；效果：约束模型只依据资料回答。
 SYSTEM_PROMPT = (
@@ -66,4 +70,4 @@ def ask(req: AskRequest):
 
 if __name__ == "__main__":
     import uvicorn  # 作用：引入启动器；效果：直接运行本文件即启动。
-    uvicorn.run("api:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=False)

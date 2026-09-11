@@ -6,6 +6,77 @@
 
 ---
 
+## 2026-09-11 · Day6（Linux 基础 + Docker 容器化部署）
+
+### 阶段
+把项目从「Windows 本机跑」升级为「Linux 虚拟机 + Docker 容器跑」，走通容器化部署全流程（运维主线起点）。
+
+### 做了什么
+- 环境：VMware 里的 Ubuntu Server（192.168.139.131），从 Windows 用 SSH 远程操作。
+- 验证 Docker：`docker --version` → `sudo docker ps` → `docker run hello-world` 跑通。
+- 新增 4 个文件：
+  - `requirements.txt`：锁定依赖版本（fastapi / uvicorn / streamlit / requests / langchain-ollama / langchain-chroma / chromadb）。
+  - `.dockerignore`：打包时排除 `.venv`、`chroma_db`、`__pycache__`、`.git`。
+  - `Dockerfile`：`python:3.12-slim` → `WORKDIR /app` → 先 `COPY requirements.txt` 再 `pip install` → `COPY . .` → `CMD uvicorn`。
+  - `docker-compose.yml`：两个服务 `api`(8000) / `app`(8501)，含环境变量注入、卷挂载、服务名互访。
+- 改造代码实现「配置与代码分离」：
+  - `api.py`：加 `OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")`，两个模型加 `base_url=`，`uvicorn.run` 改 `host="0.0.0.0"`、`reload=False`。
+  - `app.py`：`API_URL = os.getenv("API_URL", "http://127.0.0.1:8000/ask")`。
+- 结果：`docker compose build` 成功 → `up -d` 两个容器 Up → 端到端 `POST /ask` 返回真实答案，Streamlit 8501 可访问。
+
+### 问题 A：Docker Hub 拉不到镜像（国内网络）
+- **现象**：`docker run hello-world` 报 `dial tcp 202.160.128.96:443: connect: connection refused`。
+- **怎么排查**：先 `curl -I https://www.baidu.com` 返回 `HTTP/1.1 200 OK` → 证明虚拟机**能上网**，排除整体断网；再看报错是访问 `docker.io` 失败 → 锁定「只有 Docker Hub 被墙」。
+- **怎么解决**：写 `/etc/docker/daemon.json` 配 `registry-mirrors`（国内加速器列表），`sudo systemctl restart docker` 生效。
+- **懂了什么**：镜像加速器 = 国内缓存代理，绕开被墙的官方仓库；改 `daemon.json` 必须重启 daemon；遇到 `connection refused` 要先区分「网络不通」还是「目标被墙」。
+
+### 问题 B：容器连不上 Windows 的 Ollama（127.0.0.1 vs 0.0.0.0）
+- **现象**：容器能起来，但调模型失败。根因链：Ollama 默认只监听 `127.0.0.1`。
+- **怎么排查**：`netstat -ano | findstr 11434` 看到 `127.0.0.1:11434 LISTENING` → 只对本机开放。
+- **怎么解决**：设 `OLLAMA_HOST=0.0.0.0:11434` + 防火墙放行入站 11434；在虚拟机 `curl http://192.168.139.1:11434/api/tags` 验证能拿到模型列表。
+- **懂了什么**：`127.0.0.1` = 只有本机能连，`0.0.0.0` = 所有网卡都收；**容器里的 `127.0.0.1` 指容器自己**，不是宿主机，所以 base_url 必须显式指向宿主机 IP。
+
+### 问题 C：Windows 环境变量 setx 后「重启了还是不生效」
+- **现象**：`setx OLLAMA_HOST ...` 成功，重启 Ollama 后 `netstat` 复验仍只监听 `127.0.0.1`。
+- **怎么排查**：反复用 `netstat` 复验监听地址，确认新进程没吃到新变量。
+- **怎么解决**：弄清 Windows 环境变量的传递机制 —— `setx` 写的是**注册表**，但 `explorer.exe` 开机时已把旧环境读进内存，从开始菜单/托盘启动的程序继承的是**旧环境**。改为「在新开的 cmd 里 `set` 临时变量 + 从该窗口启动进程」。
+- **懂了什么**：Windows 环境变量有「注册表」和「进程内存」两份，长驻进程（explorer）不刷新；对应 Linux 的同类坑是「改了 shell 配置要重新 `source` 或重新登录」。
+
+### 问题 D：docker compose 命令不存在
+- **现象**：`docker compose version` → `docker: unknown command: docker compose`。
+- **怎么解决**：Ubuntu 的 `docker.io` 包**不含 compose 插件**，需单独装 `sudo apt install -y docker-compose-v2`。
+- **懂了什么**：Docker 本体 与 Compose（编排）是两个独立包；v1（`docker-compose`，连字符）已淘汰，用 v2（`docker compose`，空格）。
+
+### 问题 E：docker exec 加管道会卡死终端
+- **现象**：`docker compose exec api env | grep OLLAMA` 输出空白并卡住。
+- **怎么解决**：`exec` 默认分配伪终端（TTY），与管道冲突 → 加 `-T`（或改用 `docker inspect --format` 从外部看配置，不进容器）。
+- **懂了什么**：写自动化脚本时 `docker exec` 必须加 `-T`，否则会莫名卡死。
+
+### 问题 F（重点案例）：Ollama 加载大模型崩溃 0xc0000409 + CUDA error
+- **现象**：`POST /ask` 返回 500；容器日志最后一行 `CUDA error: shared object initialization failed`。
+- **怎么排查（分层排除法）**：
+  1. 是 500 而非连接失败 → 网络通，属服务端异常。
+  2. 读堆栈 → 崩在 `llm.invoke()`（加载对话模型），而 **embedding 与检索已成功** → 范围收窄到「模型加载」这一环。
+  3. 查进程/端口 → 发现 Ollama 装在非默认路径（`D:\ollama本地模型\`），且**桌面版与命令行 server 同时在跑**。
+  4. 翻 Ollama `server.log` 对齐时间线 → **同一模型 01:01 加载失败、02:13 加载成功** → 判定是**间歇性故障**，不是代码/容器问题。
+  5. 查上游 issue 确认：Windows + CUDA 下 `llama-server` 偶发分配锁页内存（`CUDA_Host`）失败、静默降级为普通内存后首个内核调用崩溃；社区反馈**桌面版正常、命令行 `ollama serve` 触发**。
+- **怎么解决**：杀掉全部 ollama 进程 → 改回**官方桌面版**启动（并带 `OLLAMA_HOST=0.0.0.0:11434`）→ 重试加载成功。
+- **额外踩坑**：崩溃的实例会让 `/api/tags` 返回**空模型列表**（`{"models":[]}`），制造「模型被删了」的假象，一度把排查带偏。
+- **懂了什么**：
+  - 排障要**分层**：网络 → 服务端 → 调用链 → 上游组件 → 已知 issue，每层都用证据把范围缩小。
+  - **把日志和时间线对齐**，是判断「偶发 vs 必现」的关键手段。
+  - 能**划清故障边界**（Docker/容器无责，是宿主机显卡 + Ollama 的已知缺陷）比修好它更重要。
+
+### 懂了什么（Docker 核心概念）
+- **镜像 vs 容器**：镜像 = 安装包/模板，容器 = 跑起来的实例（≈ 类与对象）。
+- **构建分层缓存**：`COPY requirements.txt` 与 `COPY . .` 分开写，改代码时不会重装依赖。
+- **端口映射**：`"8000:8000"` = `宿主端口:容器端口`；`EXPOSE` 只是声明，不产生实际映射。
+- **卷挂载**：`- ./chroma_db:/app/chroma_db`，数据（向量库）放宿主，与代码/镜像分离（无状态镜像 + 外部数据卷）。
+- **服务名即域名**：Compose 建专用网络 + 内置 DNS，`app` 容器用 `http://api:8000` 就能找到 `api` 容器。
+- **配置与代码分离**：同一份代码用 `os.getenv` 读环境变量，本机跑用默认值、容器跑用注入值。
+
+---
+
 ## 2026-09-07 · Day5（FastAPI 接口 + Streamlit 界面）
 
 ### 阶段

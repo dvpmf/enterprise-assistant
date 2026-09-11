@@ -1,0 +1,19 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - OLLAMA_BASE_URL=http://192.168.139.1:11434
+    volumes:
+      - ./chroma_db:/app/chroma_db
+
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - API_URL=http://api:8000/ask
+    command: streamlit run app.py --server.address=0.0.0.0 --server.port=8501
+    depends_on:
+      - api

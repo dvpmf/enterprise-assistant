@@ -3,11 +3,12 @@
 作用：用 Streamlit 搭建企业助手聊天界面，通过 FastAPI /ask 接口获取回答。
 效果：浏览器中像 ChatGPT 一样与企业助手对话。
 """
+import os  # 作用：读取环境变量；效果：让后端地址可在不同环境切换。
 import streamlit as st  # 作用：引入界面工具；效果：用 Python 写网页。
 import requests  # 作用：引入 HTTP 工具；效果：界面把问题发给 FastAPI。
 
 # 作用：定义后端接口地址；效果：界面请求指向 api.py。
-API_URL = "http://127.0.0.1:8000/ask"
+API_URL =os.getenv("API_URL","http://127.0.0.1:8000/ask")
 
 # 作用：设置页面标题；效果：浏览器标签页显示"企业智能助手"。
 st.set_page_config(page_title="企业智能助手", page_icon="")
