@@ -4,6 +4,15 @@ FROM python:3.12-slim-bookworm
 # 作用：设置容器内工作目录；效果：后面命令都在 /app 下执行。
 WORKDIR /app
 
+# 作用：把 Debian 官方源换成国内镜像；效果：构建时能正常下载系统包（官方源 deb.debian.org 在国内经常连不上，会报 Unable to connect）。
+# 同时兼容两种源文件格式：新版镜像用 debian.sources（deb822 格式），老版用 sources.list。
+RUN set -eux; \
+    for f in /etc/apt/sources.list /etc/apt/sources.list.d/debian.sources; do \
+        if [ -f "$f" ]; then \
+            sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g; s|security.debian.org|mirrors.tuna.tsinghua.edu.cn|g' "$f"; \
+        fi; \
+    done
+
 # 作用：安装 OCR 依赖的系统库；效果：opencv 需要 libGL.so.1 和 libglib，slim 镜像默认没装，不装会 ImportError。
 # rm -rf /var/lib/apt/lists/* 作用：删掉 apt 缓存；效果：镜像体积小几十 MB。
 RUN apt-get update && apt-get install -y --no-install-recommends \
