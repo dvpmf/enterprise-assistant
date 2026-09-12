@@ -3,10 +3,12 @@ services:
     build: .
     ports:
       - "8000:8000"
-    environment:
-      - OLLAMA_BASE_URL=http://192.168.139.1:11434
+    # 作用：把 .env 里的所有键值对注入容器；效果：不用一条条写 environment，新增配置项无需改本文件。
+    env_file:
+      - .env
     volumes:
       - ./chroma_db:/app/chroma_db
+    restart: unless-stopped
 
   app:
     build: .
@@ -17,3 +19,4 @@ services:
     command: streamlit run app.py --server.address=0.0.0.0 --server.port=8501
     depends_on:
       - api
+    restart: unless-stopped

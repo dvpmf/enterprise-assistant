@@ -1,7 +1,27 @@
+# ---- Web 服务与界面 ----
 fastapi==0.141.1
 uvicorn==0.52.4
 streamlit==1.63.0
 requests==2.34.2
-langchain-ollama==1.1.0
+python-multipart==0.0.32
+
+# ---- LangChain 生态 ----
+langchain==1.4.0
+langchain-core==1.6.2
+langchain-openai==1.6.2
+langchain-community==0.4.2
+langchain-text-splitters==1.1.2
 langchain-chroma==1.1.0
+langchain-ollama==1.1.0
+
+# ---- 向量库 ----
 chromadb==1.5.9
+
+# ---- 多格式解析：PDF + 图片 OCR ----
+pymupdf==1.28.2
+rapidocr-onnxruntime==1.2.3
+onnxruntime==1.29.0
+pillow==12.3.0
+
+# ---- 配置管理 ----
+python-dotenv==1.2.3
