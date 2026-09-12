@@ -4,7 +4,7 @@
 效果：运行后 chroma_db/ 是"用百炼 embedding 重新生成"的全新向量库。
 注意：换 embedding 模型后必须重跑本脚本（新旧向量不在同一向量空间，旧库检索会失效）。
 """
-import shutil  # 作用：递归删除目录；效果：一次性清空旧库，避免新旧向量混在一起。
+import shutil  # 作用：递归删除子目录；效果：清空旧库内容，避免新旧向量混在一起。
 from pathlib import Path  # 作用：路径操作；效果：判断目录是否存在。
 
 from langchain_chroma import Chroma  # 作用：向量库连接器；效果：存向量 + 支持相似度检索。
@@ -21,11 +21,23 @@ CHUNK_OVERLAP = 50  # 作用：相邻块重叠字符数；效果：防止关键�
 splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)  # 作用：切分器实例；效果：全脚本复用同一个。
 
 def reset_store() -> None:
-    """作用：删除旧向量库；效果：保证库里只保留本次新建的向量。"""
+    """作用：清空旧向量库；效果：保证库里只保留本次新建的向量。
+
+    注意：这里删的是目录里的内容，不是目录本身。
+    因为容器里 chroma_db 是挂载卷（bind mount），Linux 不允许删除挂载点，
+    直接 rmtree 整个目录会报 Device or resource busy。
+    """
     path = Path(PERSIST_DIR)  # 作用：转 Path 对象。
-    if path.exists():  # 作用：判断旧库是否存在。
-        shutil.rmtree(path)  # 作用：递归删除整个目录；效果：连同子文件一起清掉。
-        print(f"已删除旧向量库：{PERSIST_DIR}/")
+    path.mkdir(parents=True, exist_ok=True)  # 作用：确保目录存在；效果：本机第一次跑时自动新建，容器里挂载点已存在则是空操作。
+    removed = 0  # 作用：统计清掉了几项。
+    for item in path.iterdir():  # 作用：遍历目录内容；效果：只删内容，不碰目录本身。
+        if item.is_dir():  # 作用：子目录。
+            shutil.rmtree(item)
+        else:  # 作用：文件（如 chroma.sqlite3）。
+            item.unlink()
+        removed += 1
+    if removed:  # 作用：有旧数据。
+        print(f"已清空旧向量库：{PERSIST_DIR}/（删掉 {removed} 项）")
     else:
         print("未发现旧向量库，直接新建")
 
