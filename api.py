@@ -4,7 +4,7 @@
 效果：
     POST /ask    提问 → 召回 top10 → 精排 top3 → DeepSeek 生成答案 + 标注出处
     POST /agent  Agent 问答 → 模型自主决定调哪些工具（检索 / 报销计算 / 员工信息），多步完成任务
-    POST /ingest 上传文件（txt/md/pdf/图片）→ 解析（含 OCR）→ 切分 → 百炼向量化 → 入库
+    POST /ingest 上传文件（txt/md/pdf/图片）→ 解析（含 OCR）→ 切分 → 百炼向量化 → 入库（同名覆盖，幂等）
     GET  /health 健康检查（顺便报告库里有多少条向量）
 """
 import tempfile  # 作用：创建临时文件；效果：上传的内容先落临时文件，再交给 loaders 处理。
@@ -112,12 +112,13 @@ def agent(req: AgentRequest):
 
 @app.post("/ingest", response_model=IngestResponse)
 def ingest(file: UploadFile = File(...)):
-    """作用：上传文件入库；效果：解析（含 OCR）→ 切分 → 向量化 → 追加进向量库。
+    """作用：上传文件入库；效果：解析（含 OCR）→ 切分 → 向量化 → 写入向量库；
+          同名文件会覆盖旧记录（接口幂等），重复上传不会产生重复向量。
 
     参数：
         file: multipart/form-data 上传的文件
     返回：
-        IngestResponse: 文件名与入库碎片数
+        IngestResponse: 文件名、入库碎片数、结果说明
     异常：
         HTTPException: 类型不支持(400) / 文件过大(413) / 没解析出文字(422)
     """
@@ -141,12 +142,18 @@ def ingest(file: UploadFile = File(...)):
         if not docs:  # 作用：一个字都没解析出来。
             raise HTTPException(status_code=422, detail="文件里没有解析出任何文字")
         chunks = splitter.split_documents(docs)  # 作用：切分。
-        get_vectorstore().add_documents(chunks)  # 作用：增量入库；效果：向量化后追加，不覆盖已有数据。
+        store = get_vectorstore()  # 作用：取单例向量库；效果：下面连着做三件事，只取一次。
+        existing = store.get(where={"source": filename})  # 作用：查库里有没有同名的旧记录；效果：把"重复入库"拦在写之前。
+        replaced = len(existing.get("ids", []))  # 作用：统计旧记录条数；效果：能告诉上传者"覆盖了几条"。
+        if replaced:  # 作用：有同名旧记录就先删掉。
+            store.delete(where={"source": filename})  # 作用：按 source 删除；效果：接口变成幂等的 —— 同一个文件传多少次，库里都只有一份。
+        store.add_documents(chunks)  # 作用：写入新碎片；效果：向量化后入库。
     finally:
         if tmp_path is not None:
             tmp_path.unlink(missing_ok=True)  # 作用：删除临时文件；效果：missing_ok=True 表示文件不在也不报错。
 
-    return IngestResponse(source=filename, chunks=len(chunks), message="入库成功")
+    message = "入库成功" if not replaced else f"入库成功（已覆盖同名旧记录 {replaced} 条）"
+    return IngestResponse(source=filename, chunks=len(chunks), message=message)
 
 if __name__ == "__main__":
     import uvicorn  # 作用：引入启动器；效果：直接运行本文件即启动。
