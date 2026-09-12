@@ -23,5 +23,11 @@ rapidocr-onnxruntime==1.2.3
 onnxruntime==1.29.0
 pillow==12.3.0
 
+# ---- LangGraph（多工具编排）----
+langgraph==1.2.11
+
+# ---- MCP 工具接入标准 ----
+mcp==2.2.0
+
 # ---- 配置管理 ----
 python-dotenv==1.2.3

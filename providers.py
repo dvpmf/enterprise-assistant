@@ -74,28 +74,30 @@ def _build_ollama() -> ChatOllama:
     )
 
 @lru_cache(maxsize=None)
-def get_chat_model(provider: str | None = None):
+def get_chat_model(provider: str | None = None, with_fallback: bool = True):
     """作用：对话模型工厂；效果：返回一个可 invoke 的对话模型（主备链或单模型）。
 
     参数：
-        provider: 可选字符串。强制指定 "deepseek" / "qwen" / "ollama"；
-                  不传则读 .env 里的 MODEL_PROVIDER
+        provider: 可选字符串。强制指定 "deepseek" / "qwen" / "ollama"；不传则读 .env 里的 MODEL_PROVIDER
+        with_fallback: 是否启用"主备降级"。默认 True；
+                       ⚠️ 需要用 bind_tools() 时要传 False —— 主备链对象上没有 bind_tools 方法
     返回：
         Runnable: 调用 .invoke(提示词) 得到 AIMessage，取 .content 就是答案文本
     异常：
         ValueError: provider 名字不认识时抛出
     """
-    name = (provider or DEFAULT_PROVIDER).lower()  # 作用：统一转小写；效果："DeepSeek" 和 "DEEPSEEK" 都能识别。
+    name = (provider or DEFAULT_PROVIDER).lower()  # 作用：统一转小写；效果："DeepSeek" 与 "DEEPSEEK" 都能识别。
 
-    if name == "deepseek":  # 作用：主链路；效果：DeepSeek 为主、qwen 兜底。
-        primary = _build_deepseek()  # 作用：构建主模型；效果：拿到 DeepSeek。
-        fallback = _build_qwen()  # 作用：构建备用模型；效果：拿到百炼 qwen。
-        return primary.with_fallbacks([fallback])  # 作用：串成主备链；效果：主模型抛异常时自动用备用模型重跑同一次请求。
-    if name == "qwen":  # 作用：只用百炼；效果：做对比实验时手动指定。
+    if name == "deepseek":  # 作用：主链路。
+        primary = _build_deepseek()  # 作用：构建主模型。
+        if not with_fallback:  # 作用：只要裸模型；效果：给 bind_tools 用。
+            return primary
+        return primary.with_fallbacks([_build_qwen()])  # 作用：串主备链；效果：主模型抛异常时自动用备用模型重跑。
+    if name == "qwen":  # 作用：只用百炼。
         return _build_qwen()
-    if name == "ollama":  # 作用：只用本地；效果：断网保底。
+    if name == "ollama":  # 作用：只用本地。
         return _build_ollama()
-    raise ValueError(f"未知的 MODEL_PROVIDER: {name!r}，可选：deepseek / qwen / ollama")  # 作用：拦住拼写错误；效果：报错告诉你合法值。
+    raise ValueError(f"未知的 MODEL_PROVIDER: {name!r}，可选：deepseek / qwen / ollama")  # 作用：拦住拼写错误。
 
 @lru_cache(maxsize=None)
 def get_embedding() -> OpenAIEmbeddings:

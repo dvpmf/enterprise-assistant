@@ -1,49 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-作用：把多格式 RAG 问答能力包装成 HTTP API。
+作用：把多格式 RAG 问答与 Agent 能力包装成 HTTP API。
 效果：
     POST /ask    提问 → 召回 top10 → 精排 top3 → DeepSeek 生成答案 + 标注出处
+    POST /agent  Agent 问答 → 模型自主决定调哪些工具（检索 / 报销计算 / 员工信息），多步完成任务
     POST /ingest 上传文件（txt/md/pdf/图片）→ 解析（含 OCR）→ 切分 → 百炼向量化 → 入库
     GET  /health 健康检查（顺便报告库里有多少条向量）
 """
 import tempfile  # 作用：创建临时文件；效果：上传的内容先落临时文件，再交给 loaders 处理。
-from functools import lru_cache  # 作用：缓存；效果：向量库连接全进程只建一次。
 from pathlib import Path  # 作用：路径处理；效果：取扩展名、删临时文件。
 
 from fastapi import FastAPI, File, HTTPException, UploadFile  # 作用：FastAPI 组件；效果：路由、文件上传、错误响应。
-from langchain_chroma import Chroma  # 作用：向量库连接器。
 from langchain_text_splitters import RecursiveCharacterTextSplitter  # 作用：切分器。
 from pydantic import BaseModel  # 作用：请求/响应体结构；效果：自动校验 + 生成 /docs 文档。
 
+from agent import run_agent  # 作用：Agent 门面；效果：/agent 端点直接复用整张 LangGraph 图。
 from loaders import load_file  # 作用：多格式解析（含 OCR）。
-from providers import get_chat_model, get_embedding  # 作用：模型层工厂。
+from providers import get_chat_model  # 作用：模型层工厂；效果：拿到 DeepSeek + qwen 主备链。
 from rerank import rerank_documents  # 作用：精排层。
+from retriever import RECALL_K, RERANK_TOP_N, build_prompt, get_vectorstore, retrieve  # 作用：检索层；效果：向量库/粗筛/拼提示词全部复用，不重复实现。
 
 # ---- 配置区 ----
-PERSIST_DIR = "chroma_db"  # 作用：向量库目录。
-RECALL_K = 10  # 作用：粗筛召回条数；效果：宁多勿漏，交给精排去筛。
-RERANK_TOP_N = 3  # 作用：精排后保留条数；效果：只把最相关的 3 条塞进提示词。
 MAX_UPLOAD_MB = 20  # 作用：上传大小上限（MB）。
 ALLOWED_SUFFIXES = {".txt", ".md", ".pdf", ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"}  # 作用：白名单；效果：拒绝乱七八糟的文件类型。
-
-SYSTEM_PROMPT = (
-    "你是[企业智能助手]，负责依据提供的企业内部资料回答员工问题。\n"
-    "规则：1. 只依据资料回答，资料没有的内容，明确说'资料中未找到相关信息'；\n"
-    "2. 回答简洁专业，先给结论再给依据；\n"
-    "3. 回答末尾注明资料出处（来源文件名）。"
-)  # 作用：人设与约束；效果：让模型贴着资料回答，不自由发挥。
 
 splitter = RecursiveCharacterTextSplitter(chunk_size=200, chunk_overlap=50)  # 作用：切分器实例；效果：入库碎片与建库时保持同样粒度。
 llm = get_chat_model()  # 作用：模块级只建一次；效果：主备链全局复用，不每个请求重建连接池。
 
-@lru_cache(maxsize=None)
-def get_vectorstore() -> Chroma:
-    """作用：单例向量库；效果：整个进程只建立一次连接，避免每个请求重复连库。
-
-    返回：
-        Chroma: 已连接的向量库对象
-    """
-    return Chroma(persist_directory=PERSIST_DIR, embedding_function=get_embedding())  # 作用：用百炼 embedding 连接本地库；效果：查询与入库同一向量空间。
 
 class AskRequest(BaseModel):
     """作用：/ask 的请求体；效果：客户端必须传 question 字段。"""
@@ -60,34 +43,21 @@ class IngestResponse(BaseModel):
     chunks: int  # 作用：切出的碎片数量。
     message: str  # 作用：结果说明。
 
+
+class AgentRequest(BaseModel):
+    """作用：/agent 的请求体。"""
+    question: str  # 作用：用户问题。
+    thread_id: str = "default"  # 作用：会话标识；效果：同一个 id 共享多轮记忆，不同 id 相互隔离。
+
+
+class AgentResponse(BaseModel):
+    """作用：/agent 的响应体。"""
+    answer: str  # 作用：最终答案。
+    tools_used: list[str]  # 作用：本次调用了哪些工具；效果：演示与排障时一眼看出 Agent 走了哪条路。
+    messages: int  # 作用：本轮消息总数；效果：侧面反映"几步完成"。
+
 app = FastAPI(title="企业智能助手 API")  # 作用：创建应用；效果：所有路由挂在它身上。
 
-def retrieve(query: str, k: int = RECALL_K) -> list:
-    """作用：向量粗筛；效果：返回与问题语义最近的 k 条候选碎片。
-
-    参数：
-        query: 用户问题
-        k: 召回条数
-    返回：
-        list[Document]: 候选碎片
-    """
-    return get_vectorstore().similarity_search(query, k=k)  # 作用：相似度检索。
-
-def build_prompt(query: str, docs: list) -> str:
-    """作用：把精排后的资料拼进提示词；效果：让模型基于资料回答。
-
-    参数：
-        query: 用户问题
-        docs: 精排后的碎片
-    返回：
-        str: 完整提示词
-    """
-    context = "\n\n".join(  # 作用：把多条碎片拼成一段上下文；效果：空行分隔更易读。
-        f"[资料{i} 来源:{d.metadata.get('source', '未知')} "
-        f"页码:{d.metadata.get('page', '-')} 精排得分:{d.metadata.get('rerank_score', '-')}]\n{d.page_content}"
-        for i, d in enumerate(docs, start=1)  # 作用：编号从 1 开始。
-    )
-    return f"{SYSTEM_PROMPT}\n\n{context}\n\n问题：{query}"  # 作用：人设 + 资料 + 问题。
 
 @app.get("/health")
 def health():
@@ -125,6 +95,20 @@ def ask(req: AskRequest):
         for d in top_docs
     ]
     return AskResponse(answer=answer, sources=sources)
+
+
+@app.post("/agent", response_model=AgentResponse)
+def agent(req: AgentRequest):
+    """作用：Agent 问答接口；效果：模型自主决定调哪些工具、调几次，多步完成任务。
+
+    参数：
+        req: 含 question 与可选 thread_id 的请求体
+    返回：
+        AgentResponse: 答案 + 用到的工具清单 + 消息条数
+    """
+    result = run_agent(req.question, req.thread_id)  # 作用：交给 LangGraph 跑；效果：检索/计算/查员工全部由模型自主编排。
+    return AgentResponse(**result)  # 作用：字典拆包成响应模型。
+
 
 @app.post("/ingest", response_model=IngestResponse)
 def ingest(file: UploadFile = File(...)):
