@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 作用：读取 documents 下的企业文档，切分成"知识碎片"，供后续向量化入库。
-效果：运行后打印每个碎片的序号、来源文件和前 50 字预览。
+效果：运行后打印每个碎片的序号、来源文件和前 50 字预览。。。。
 """
 from langchain_community.document_loaders import TextLoader  # 作用：读取文本文件；效果：把 txt 读成文档对象。
 from langchain_text_splitters import RecursiveCharacterTextSplitter  # 作用：智能切分文本；效果：按语义切成小块。
