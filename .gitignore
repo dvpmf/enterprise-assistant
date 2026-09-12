@@ -7,3 +7,5 @@ chroma_db/
 # 忽略 Python 缓存
 __pycache__/
 *.pyc
+# 忽略环境变量文件（含密钥，绝不提交）
+.env
