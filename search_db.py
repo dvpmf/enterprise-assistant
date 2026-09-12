@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 作用：从已建立的 ChromaDB 向量库中检索与问题最相关的知识碎片。
-效果：运行后打印与提问最相关的 3 个碎片及其来源。。。。
+效果：运行后打印与提问最相关的 3 个碎片及其来源。
 """
 from langchain_ollama import OllamaEmbeddings  # 作用：连接 embedding 模型；效果：把问题也转成向量（必须与入库用同一模型）。
 from langchain_chroma import Chroma  # 作用：连接已有向量库；效果：支持相似度检索。
